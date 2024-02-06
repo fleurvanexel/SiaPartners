@@ -1,77 +1,79 @@
 import pandas as pd
-import numpy as np
-# from sklearn.linear_model import LogisticRegression
-# from causalml.match import NearestNeighborMatch
+from sklearn.linear_model import LogisticRegression
+from causalml.match import NearestNeighborMatch
 
-item_lines = pd.read_csv("7twenty_data/item_lines.csv")
-item_lines.drop(columns=['Unnamed: 0', 'Cost'], inplace = True)
+subset_beforeT = pd.read_csv("subset_beforeT.csv")
+subset_afterT_member = pd.read_csv("subset_afterT_member.csv")
+subset_afterT_nonmember = pd.read_csv("subset_afterT_nonmember.csv")
+subset_beforeT = subset_beforeT.head(5000)
+subset_afterT_member = subset_afterT_member.head(200)
+subset_afterT_nonmember = subset_afterT_nonmember.head(5000)
 
-items = pd.read_csv("7twenty_data/items.csv")
-items = items.rename(columns={"Item No": "Item"})
-items.drop(columns=['Unnamed: 0', 'Item Name'], inplace = True)
+subset_afterT_lr = pd.concat([subset_afterT_nonmember, subset_afterT_member], ignore_index=True)
+subset_afterT_lr = subset_afterT_lr.drop(columns=["Rev", "Date"])
+subset_beforeT_prop = subset_beforeT.drop(columns=["Rev", "Date"])
+subset_afterT_member_prop = subset_afterT_member.drop(columns=["Rev", "Date"])
+subset_afterT_nonmember_prop = subset_afterT_nonmember.drop(columns=["Rev", "Date"])
 
-item_lines = item_lines.merge(items[["Item", "Hierarchy L2"]], on = "Item")
-item_lines["Rev"] = item_lines['Amount'] * item_lines["Quantity"] #how to deal with returns? 
+logistic_model = LogisticRegression()
+logistic_model.fit(subset_afterT_lr.drop("Y", axis=1), subset_afterT_lr["Y"])
 
-item_lines = pd.get_dummies(item_lines, columns=['Hierarchy L2'], prefix='HL2') * 1
+subset_beforeT['Propensity_Score'] = logistic_model.predict_proba(subset_beforeT_prop.drop("Y", axis=1))[:, 1]
+subset_afterT_member['Propensity_Score'] = logistic_model.predict_proba(subset_afterT_member_prop.drop("Y", axis=1))[:, 1]
+subset_afterT_nonmember['Propensity_Score'] = logistic_model.predict_proba(subset_afterT_nonmember_prop.drop("Y", axis=1))[:, 1]
 
-data = item_lines.groupby(["Receipt"], as_index=False).agg({'Rev': 'sum', **{f'HL2_{i}': 'first' for i in range(10, 25) if f'HL2_{i}' in item_lines.columns}})
+subset_beforeT_matching = pd.concat([subset_beforeT, subset_afterT_member], ignore_index=True).drop(columns=["Rev", "Date"])
+subset_afterT_matching = pd.concat([subset_afterT_member, subset_afterT_nonmember], ignore_index=True).drop(columns=["Rev", "Date"])
 
-item_lines.drop_duplicates(subset = ["Receipt"], inplace = True)
+del logistic_model
+del subset_beforeT_prop
+del subset_afterT_member_prop
+del subset_afterT_nonmember_prop
+del subset_afterT_lr
 
-item_lines["Y"] = np.where(item_lines["Customer ID"].isna(), 0, 1)
-item_lines.drop(columns=['Customer ID'], inplace = True)
+matcher = NearestNeighborMatch(caliper=0.2, replace=False)
+matched_data_after = matcher.match(data=subset_afterT_matching, treatment_col="Y", score_cols=['Propensity_Score'])
+# subset_afterT_nonmember['Matched'] = False
+# subset_afterT_nonmember.loc[matched_data_after.index, 'Matched'] = True
 
-data = data.merge(item_lines[['Date', 'Time', 'Y', 'Receipt', 'Store']], on = 'Receipt')
+# matched_counts = subset_afterT_nonmember['Matched'].value_counts()
 
-del item_lines
-del items
+matched_data_before = matcher.match(data=subset_beforeT_matching, treatment_col="Y", score_cols=['Propensity_Score'])
+# subset_beforeT['Matched'] = False
+# subset_beforeT.loc[matched_data_before.index, 'Matched'] = True
+del matcher
+del subset_beforeT_matching
+del subset_afterT_matching
 
-stores = pd.read_csv("7twenty_data/stores.csv")
-stores = stores.rename(columns={"Store No_": "Store"})
-stores.drop(columns=['Unnamed: 0', 'Store Name', "Last Date Modified"], inplace = True)
+# matched_nonloyalty_beforeT = matched_data_before[matched_data_before['Y'] == 0]
+# matched_nonloyalty_afterT = matched_data_after[matched_data_after['Y'] == 0]
 
-data = data.merge(stores, on = "Store")
-data.drop(columns=["Store"], inplace = True)
+# avg_revenue_nonloyalty_beforeT = matched_nonloyalty_beforeT["Rev"].mean()
+# avg_revenue_nonloyalty_afterT = matched_nonloyalty_afterT["Rev"].mean()
+# avg_revenue_loyalty = subset_afterT_member["Rev"].mean()
 
-del stores
 
-blub = data.head(10)
+# matched_nonloyalty_beforeT = matched_nonloyalty_beforeT.drop(columns=["Receipt", "Rev", "Date", "Time", "Y"])
+# matched_nonloyalty_afterT = matched_nonloyalty_afterT.drop(columns=["Receipt", "Rev", "Date", "Time", "Y"])
 
-data['Time'] = data['Time'].str[:2]
-bins = [0, 6, 12, 18, 24]
-labels = ['00:00-06:00', '06:00-12:00', '12:00-18:00', '18:00-00:00']
-data['Time_interval'] = pd.cut(pd.to_numeric(data['Time']), bins=bins, labels=labels, right=False)
-data = pd.get_dummies(data, columns=['Time_interval'], prefix='Hours') * 1
-#data = pd.get_dummies(data, columns=['Time'], prefix = 'Hour') * 1
+# for col in matched_nonloyalty_beforeT.columns: 
+#     mean_nlb = matched_nonloyalty_beforeT[col].mean()
+#     sd_nlb = matched_nonloyalty_beforeT[col].std()
+#     mean_nla = matched_nonloyalty_afterT[col].mean()
+#     sd_nla = matched_nonloyalty_afterT[col].std()
+#     mean_lm = loyalty_members[col].mean()
+    
+#     fraction_before = (mean_nlb - mean_lm) / sd_nlb
+#     fraction_after = (mean_nla - mean_lm) / sd_nla
+    
+#     print()
+#     print(col)
+#     print(f"BEFORE T & LOYMEM: {fraction_before}")
+#     print(f"AFTER T & LOYMEM: {fraction_after}")
+#     print()
+    
+    
+# test = loyalty_members["Propensity_Score"][1:10]
+# plt.scatter(, [0] *loyalty_members["Propensity_Score"].shape()) 
+    
 
-days = [0, 1, 2, 3, 4]
-weekend = [5, 6]
-
-data['Day'] = pd.to_datetime(data['Date']).dt.dayofweek
-
-data["Day"][data["Day"].isin(days)==True] = 0
-data["Day"][data["Day"].isin(weekend)==True] = 1
-data = pd.get_dummies(data, columns=['Day'], prefix='Weekend') * 1
-
-data = pd.get_dummies(data, columns=['Zone'], prefix='Zone') * 1
-
-data.to_csv('dataframe.csv', index=False)
-
-a = data.head(5000)
-
-# PROPENSITY SCORE MATCHING - logistic regression
-#
-# X = a.drop(columns=["Receipt", "Rev", "Date", "Time"])
-#
-# logistic_model = LogisticRegression()
-# logistic_model.fit(X, a['Y'])
-# propensity_scores = logistic_model.predict_proba(X)[:, 1]
-#
-# data_for_matching = X.copy()
-# data_for_matching['treatment'] = a['Y']
-# data_for_matching['propensity_score'] = propensity_scores
-# matcher = NearestNeighborMatch()
-# matched_data = matcher.match(data_for_matching, method='min', replace=True)
-# matched_X = matched_data.drop(['treatment', 'propensity_score'], axis=1)
-# matched_treatment = matched_data['treatment']
